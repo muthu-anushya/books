@@ -71,11 +71,12 @@ const availableCollection = mongoose.model("available", availableSchema);
 module.exports = { availableCollection };
 
 const seniorschema = new mongoose.Schema({
-  name: { type: String, required: true, unique: true },
-  mailId: { type: String, required: true },
-  collegeId: { type: String, required: true },
-  contact: { type: String, required: true },
-
+  name: { type: String, required: true },
+  mailId: { type: String, required: true, unique: true },
+  collegeId: { type: String, default: "" },
+  contact: { type: String, default: "" },
+  googleId: { type: String, unique: true, sparse: true },
+  picture: { type: String },
   books: [
     {
       bookTitle: { type: String, required: true },
@@ -94,10 +95,12 @@ const seniorCollection = mongoose.model("seniorData", seniorschema);
 module.exports = { seniorCollection };
 
 const juniorschema = new mongoose.Schema({
-  name: { type: String, required: true, unique: true },
-  mailId: { type: String, required: true },
-  collegeId: { type: String, required: true },
-  contact: { type: String, required: true },
+  name: { type: String, required: true },
+  mailId: { type: String, required: true, unique: true },
+  collegeId: { type: String, default: "" },
+  contact: { type: String, default: "" },
+  googleId: { type: String, unique: true, sparse: true },
+  picture: { type: String },
   books: [
     {
       bookTitle: { type: String, required: true },
@@ -287,6 +290,135 @@ app.post("/juniorlogin", async (req, res) => {
     });
   } catch (error) {
     console.error("Error during login:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// Google OAuth Authentication for Senior
+app.post("/google-auth-senior", async (req, res) => {
+  const { email, name, picture, googleId } = req.body;
+
+  if (!email || !name) {
+    return res.status(400).json({ message: "Email and name are required" });
+  }
+
+  try {
+    // Check if user exists
+    let user = await seniorCollection.findOne({ 
+      $or: [{ mailId: email }, { googleId: googleId }] 
+    });
+
+    if (user) {
+      // Update user with Google info if not already set
+      if (!user.googleId && googleId) {
+        user.googleId = googleId;
+      }
+      if (!user.picture && picture) {
+        user.picture = picture;
+      }
+      await user.save();
+    } else {
+      // Create new user
+      user = new seniorCollection({
+        name,
+        mailId: email,
+        googleId: googleId || null,
+        picture: picture || null,
+        collegeId: "",
+        contact: "",
+        books: [],
+      });
+      await user.save();
+    }
+
+    // Generate JWT token
+    const token = jwt.sign({ userId: user._id }, SECRET_KEY, {
+      expiresIn: "7d",
+    });
+
+    res.status(200).json({
+      message: "Authentication successful",
+      token,
+      user: {
+        userId: user._id,
+        mailId: user.mailId,
+        name: user.name,
+        picture: user.picture,
+        books: user.books || [],
+      },
+      isNewUser: !user.googleId || !user.collegeId,
+    });
+  } catch (error) {
+    console.error("Error during Google auth:", error);
+    if (error.code === 11000) {
+      return res.status(400).json({ 
+        message: "User with this email already exists" 
+      });
+    }
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// Google OAuth Authentication for Junior
+app.post("/google-auth-junior", async (req, res) => {
+  const { email, name, picture, googleId } = req.body;
+
+  if (!email || !name) {
+    return res.status(400).json({ message: "Email and name are required" });
+  }
+
+  try {
+    // Check if user exists
+    let user = await juniorCollection.findOne({ 
+      $or: [{ mailId: email }, { googleId: googleId }] 
+    });
+
+    if (user) {
+      // Update user with Google info if not already set
+      if (!user.googleId && googleId) {
+        user.googleId = googleId;
+      }
+      if (!user.picture && picture) {
+        user.picture = picture;
+      }
+      await user.save();
+    } else {
+      // Create new user
+      user = new juniorCollection({
+        name,
+        mailId: email,
+        googleId: googleId || null,
+        picture: picture || null,
+        collegeId: "",
+        contact: "",
+        books: [],
+      });
+      await user.save();
+    }
+
+    // Generate JWT token
+    const token = jwt.sign({ userId: user._id }, SECRET_KEY, {
+      expiresIn: "7d",
+    });
+
+    res.status(200).json({
+      message: "Authentication successful",
+      token,
+      user: {
+        userId: user._id,
+        mailId: user.mailId,
+        name: user.name,
+        picture: user.picture,
+      },
+      isNewUser: !user.googleId || !user.collegeId,
+    });
+  } catch (error) {
+    console.error("Error during Google auth:", error);
+    if (error.code === 11000) {
+      return res.status(400).json({ 
+        message: "User with this email already exists" 
+      });
+    }
     res.status(500).json({ message: "Internal server error" });
   }
 });
