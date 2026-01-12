@@ -12,6 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@react-oauth/google": "^0.13.4",
     "@reduxjs/toolkit": "^2.2.8",
     "axios": "^1.7.7",
     "moongoose": "^0.0.5",

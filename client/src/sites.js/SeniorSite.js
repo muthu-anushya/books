@@ -75,7 +75,7 @@ export default function SeniorSite() {
               className="h-16 w-16 mr-4 md:h-20 md:w-20 rounded-full"
             />
             <h1 className="text-3xl md:text-4xl lg:text-5xl xl:text-4xl text-white p-6 text-center">
-              JACSICE BookNest
+              BookNest - Universal Platform
             </h1>
           </div>
           {/* Right side: Button */}
@@ -83,7 +83,10 @@ export default function SeniorSite() {
             <button
               onClick={(e) => {
                 e.preventDefault();
-                navigate("/mainpage");
+                localStorage.removeItem("token");
+                localStorage.removeItem("user");
+                localStorage.removeItem("userType");
+                navigate("/dashboard");
               }}
               className="bg-violet-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-blue-600 hover:text-white transition duration-200"
             >

@@ -137,7 +137,10 @@ function BookAvailableSeniorList() {
             <button
               onClick={(e) => {
                 e.preventDefault();
-                navigate("/mainpage");
+                localStorage.removeItem("token");
+                localStorage.removeItem("user");
+                localStorage.removeItem("userType");
+                navigate("/dashboard");
               }}
               className="bg-white text-[#25154d] py-2 px-4 rounded-lg font-medium hover:bg-lime-500 hover:text-white transition duration-200"
             >
