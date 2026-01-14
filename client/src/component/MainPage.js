@@ -12,7 +12,7 @@ function MainPage() {
   };
   return (
     <>
-      <div>
+      <div style={{ background: '#f0d4ce', minHeight: '100vh' }}>
         <div className="flex items-center justify-center p-4 bg-gradient-to-r bg-[#25154d]">
           <img
             src="/logo.jpeg" // Assuming the logo is placed in the public/images directory

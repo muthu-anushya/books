@@ -15,7 +15,7 @@ const SeniorRegistration = () => {
     e.preventDefault();
     try {
       const response = await axios.post(
-        "https://books-serverside.onrender.com/seniordetails",
+        "http://localhost:8000/seniordetails",
         {
           name,
           mailId,
@@ -60,7 +60,7 @@ const SeniorRegistration = () => {
           JACSICE BookNest
         </h1>
       </div>
-      <div className=" bg-violet-600 min-h-screen flex items-center justify-center  p-4">
+      <div className="min-h-screen flex items-center justify-center p-4" style={{ background: '#f0d4ce' }}>
         <div className="w-full max-w-md bg-white shadow-md rounded px-8 py-8">
           <h2 className="text-2xl font-bold text-center mb-6">
             Senior Registration

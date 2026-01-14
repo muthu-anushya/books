@@ -1,3 +1,6 @@
+// Load environment variables from .env file (for local development)
+require("dotenv").config();
+
 const express = require("express");
 const bodyParser = require("body-parser");
 const mongoose = require("mongoose");
@@ -64,6 +67,16 @@ const availableSchema = new mongoose.Schema({
   title: { type: String, required: true, unique: true },
   available: { type: String, required: true },
   contact: { type: String, required: true },
+  price: { type: Number, required: true, default: 0 },
+  requiresPayment: { type: Boolean, default: false },
+  userId: { type: String, required: false },
+  // Payment fields
+  utr: { type: String },
+  paidBy: { type: String },
+  paymentStatus: { type: String, enum: ["pending", "paid", "verified", "rejected"], default: "pending" },
+  paymentVerified: { type: Boolean, default: false },
+  paymentDate: { type: Date },
+  utrSubmittedDate: { type: Date },
 });
 
 const availableCollection = mongoose.model("available", availableSchema);
@@ -86,6 +99,8 @@ const seniorschema = new mongoose.Schema({
       dep: { type: String, required: true },
       contact: { type: String, required: true },
       userId: { type: mongoose.Schema.Types.ObjectId, ref: "seniordata" },
+      price: { type: Number, default: 0 },
+      requiresPayment: { type: Boolean, default: false },
     },
   ],
 });
@@ -110,6 +125,8 @@ const juniorschema = new mongoose.Schema({
       dep: { type: String, required: true },
       contact: { type: String, required: true },
       userId: { type: mongoose.Schema.Types.ObjectId, ref: "seniordata" },
+      price: { type: Number, default: 0 },
+      requiresPayment: { type: Boolean, default: false },
     },
   ],
 });
@@ -120,21 +137,64 @@ module.exports = { juniorCollection };
 
 // User Login
 app.post("/otherbooks", async (req, res) => {
-  const { title, available, contact } = req.body;
+  const { title, available, contact, price, requiresPayment, userId } = req.body;
 
   try {
-    // Find the user by username
+    // Validate all required fields
+    if (!title || !title.trim()) {
+      return res.status(400).json({ message: "Title is required" });
+    }
+    if (!available || !available.trim()) {
+      return res.status(400).json({ message: "Availability is required" });
+    }
+    if (!contact || contact.trim() === "") {
+      return res.status(400).json({ message: "Contact number is required" });
+    }
+    if (contact.length !== 10) {
+      return res.status(400).json({ message: "Contact number must be 10 digits" });
+    }
+    
+    // Parse and validate price (mandatory field, can be 0)
+    let parsedPrice = 0;
+    let paymentRequired = false;
+    
+    if (price !== undefined && price !== null && price !== "") {
+      parsedPrice = typeof price === 'number' ? price : parseFloat(price);
+      if (isNaN(parsedPrice)) {
+        parsedPrice = 0;
+      }
+      if (parsedPrice < 0) {
+        return res.status(400).json({ message: "Price cannot be negative" });
+      }
+      if (parsedPrice > 200) {
+        return res.status(400).json({ message: "Price cannot exceed ₹200" });
+      }
+      if (parsedPrice > 0) {
+        paymentRequired = true;
+      }
+    } else {
+      // If price is not provided, default to 0
+      parsedPrice = 0;
+    }
+
+    // Create the entry
     const newEntry = new availableCollection({
       title,
       available,
       contact,
+      price: parsedPrice,
+      requiresPayment: paymentRequired,
+      userId: userId || null,
     });
 
     // Save the entry to the database
     await newEntry.save();
 
     // Return a success response
-    res.status(201).json({ message: "Book details added successfully" });
+    res.status(201).json({ 
+      message: "Book details added successfully",
+      book: newEntry
+    });
   } catch (error) {
     console.error(error); // Log the error for debugging
     if (error.code === 11000) {
@@ -148,9 +208,36 @@ app.post("/otherbooks", async (req, res) => {
 
 app.get("/otherbooks", async (req, res) => {
   try {
+    const { userId } = req.query; // Optional userId to filter paid books
+    
     // Fetch all available books from the database
-    const availableBooksname = await availableCollection.find({});
-    console.log("Fetched books:", availableBooksname); // Log fetched data
+    let availableBooksname = await availableCollection.find({});
+    
+    // Filter books based on payment status:
+    // - Free books (price = 0 or no payment required) → show to everyone
+    // - Paid books that are verified → only show to the junior who paid
+    // - Paid books that are not verified → show to everyone (they can pay)
+    availableBooksname = availableBooksname.filter(book => {
+      const isFree = !book.requiresPayment && (!book.price || book.price === 0);
+      
+      if (isFree) {
+        return true; // Free books visible to everyone
+      }
+      
+      // Paid books
+      if (book.paymentVerified && book.paidBy) {
+        // Only show to the junior who paid
+        if (userId && book.paidBy.toString() === userId) {
+          return true;
+        }
+        return false; // Hide from others
+      }
+      
+      // Paid but not verified yet - show to everyone so they can pay
+      return true;
+    });
+    
+    console.log("Fetched books:", availableBooksname.length); // Log count
 
     if (availableBooksname.length === 0) {
       return res.status(404).json({ message: "No available books found." });
@@ -160,6 +247,24 @@ app.get("/otherbooks", async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Error fetching available books" });
+  }
+});
+
+// Delete other book
+app.delete("/otherbooks/:bookId", async (req, res) => {
+  try {
+    const { bookId } = req.params;
+    
+    const book = await availableCollection.findByIdAndDelete(bookId);
+    
+    if (!book) {
+      return res.status(404).json({ message: "Book not found" });
+    }
+    
+    res.status(200).json({ message: "Book removed successfully" });
+  } catch (error) {
+    console.error("Error deleting other book:", error);
+    res.status(500).json({ message: "Error deleting book" });
   }
 });
 
@@ -432,6 +537,19 @@ const availabilityBookSchema = new mongoose.Schema({
   contact: String,
   isAvailable: Boolean,
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "seniordata" },
+  price: { type: Number, required: false }, // Price for the book - NO DEFAULT to ensure it's always saved
+  requiresPayment: { type: Boolean, required: false }, // Whether payment is required - NO DEFAULT to ensure it's always saved
+  paymentStatus: { type: String, enum: ["pending", "paid", "verified", "rejected"] }, // Payment status
+  utr: { type: String }, // UTR number from junior
+  paidBy: { type: mongoose.Schema.Types.ObjectId, ref: "juniordata" }, // Junior who paid
+  paymentVerified: { type: Boolean }, // Admin verification status
+  paymentDate: { type: Date }, // Date when payment was made
+  utrSubmittedDate: { type: Date }, // Date when UTR was submitted
+}, {
+  // Ensure all fields are saved, even if they match defaults
+  minimize: false,
+  // Don't use defaults - we'll set everything explicitly
+  strict: true
 });
 const AvailableBook = mongoose.model("availableBooks", availabilityBookSchema);
 
@@ -509,9 +627,28 @@ app.post("/availableBooks", async (req, res) => {
       semester,
       contact,
       userId,
+      price,
+      requiresPayment,
     } = req.body;
 
-    console.log("Received User ID:", userId);
+    console.log("🔍 ===== RECEIVED BOOK DATA FROM FRONTEND =====");
+    console.log("Full req.body:", JSON.stringify(req.body, null, 2));
+    console.log("Extracted values:", {
+      bookTitle,
+      Year,
+      Regulation,
+      department,
+      semester,
+      contact,
+      userId,
+      price,
+      requiresPayment,
+      priceType: typeof price,
+      requiresPaymentType: typeof requiresPayment,
+      priceValue: price,
+      requiresPaymentValue: requiresPayment
+    });
+    console.log("================================================");
 
     // Find the user in the seniordata collection by userId
     const user = await seniorCollection.findById(userId);
@@ -520,56 +657,834 @@ app.post("/availableBooks", async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Check if the book already exists in AvailableBook collection
-    // const existingBook = await AvailableBook.findOne({
-    //   bookTitle,
-    //   Year,
-    //   Regulation,
-    //   department,
-    //   semester,
-    //   contact,
-    // });
+    // Parse and validate price - handle both number and string
+    console.log("💰 ===== PRICE PROCESSING =====");
+    console.log("Raw price received:", price, "Type:", typeof price);
+    
+    let parsedPrice = 0;
+    if (price !== undefined && price !== null && price !== "") {
+      parsedPrice = typeof price === 'number' ? price : parseFloat(price);
+      console.log("After parseFloat:", parsedPrice);
+      if (isNaN(parsedPrice)) {
+        console.log("⚠️ Price is NaN, setting to 0");
+        parsedPrice = 0;
+      }
+    } else {
+      console.log("⚠️ Price is undefined/null/empty, setting to 0");
+    }
+    
+    // Determine if payment is required and final price
+    // SIMPLIFIED LOGIC: If requiresPayment is true OR price > 0, payment is required
+    const explicitRequiresPayment = requiresPayment === true || requiresPayment === "true";
+    const hasValidPrice = parsedPrice > 0 && parsedPrice <= 200;
+    
+    // Final decision: payment required if explicitly set OR if price > 0
+    const finalRequiresPayment = explicitRequiresPayment || hasValidPrice;
+    
+    // Final price: Use parsedPrice if it's valid (> 0), otherwise 0
+    // CRITICAL: If requiresPayment is true, we MUST have a price > 0
+    let finalPrice = parsedPrice > 0 ? parsedPrice : 0;
+    
+    // If requiresPayment is explicitly true but price is 0, that's an error
+    if (explicitRequiresPayment && finalPrice === 0) {
+      console.log("⚠️ ERROR: requiresPayment is true but price is 0!");
+      console.log("Original price value:", price, "Type:", typeof price);
+      console.log("Parsed price:", parsedPrice);
+      // Try one more time to parse the price
+      if (price !== undefined && price !== null && price !== "") {
+        const retryPrice = typeof price === 'number' ? price : parseFloat(String(price));
+        if (!isNaN(retryPrice) && retryPrice > 0) {
+          console.log("✅ Retry successful, using price:", retryPrice);
+          finalPrice = retryPrice;
+          parsedPrice = retryPrice;
+        } else {
+          console.log("❌ Retry failed, price remains 0");
+        }
+      }
+    }
+    
+    console.log("Price processing result:", {
+      originalPrice: price,
+      parsedPrice,
+      explicitRequiresPayment,
+      hasValidPrice,
+      originalRequiresPayment: requiresPayment,
+      finalRequiresPayment,
+      finalPrice,
+      "finalPrice type": typeof finalPrice,
+      "finalRequiresPayment type": typeof finalRequiresPayment
+    });
+    console.log("=================================");
 
-    // if (existingBook) {
-    //   return res
-    //     .status(409)
-    //     .send("You have already added the book details for this contact.");
-    // }
+    // Validate price if payment is required
+    if (finalRequiresPayment && (finalPrice <= 0 || finalPrice > 200)) {
+      return res.status(400).json({ message: "Price must be between 1 and 200" });
+    }
 
-    // Create a new entry in the AvailableBook collection
-    const newBook = new AvailableBook({
+    // Use findOneAndUpdate with upsert to ensure all fields are saved
+    // This approach guarantees that price and requiresPayment are saved
+    console.log("💾 ===== SAVING/UPDATING BOOK =====");
+    
+    // CRITICAL: Build the complete document object - don't use $set, use $setOnInsert for defaults only
+    // This ensures ALL fields are saved, including price and requiresPayment even if they're 0/false
+    const completeBookData = {
+      bookTitle: String(bookTitle),
+      Year: String(Year),
+      Regulation: String(Regulation),
+      department: String(department),
+      semester: String(semester),
+      contact: String(contact),
+      userId: userId,
+      isAvailable: true,
+      price: Number(finalPrice), // CRITICAL: Explicitly convert to Number - even if 0
+      requiresPayment: Boolean(finalRequiresPayment), // CRITICAL: Explicitly convert to Boolean - even if false
+      paymentStatus: finalRequiresPayment ? "pending" : "verified",
+      paymentVerified: !finalRequiresPayment,
+      utr: "",
+      paidBy: null,
+      paymentDate: null,
+      utrSubmittedDate: null
+    };
+    
+    console.log("Complete book data to save:", JSON.stringify(completeBookData, null, 2));
+    console.log("Final price being saved:", finalPrice, "Type:", typeof finalPrice, "As Number:", Number(finalPrice));
+    console.log("Final requiresPayment being saved:", finalRequiresPayment, "Type:", typeof finalRequiresPayment, "As Boolean:", Boolean(finalRequiresPayment));
+    
+    // Check if book already exists
+    const query = {
       bookTitle,
       Year,
       Regulation,
       department,
       semester,
-      contact,
       userId,
-      isAvailable: true,
+      contact
+    };
+    
+    console.log("Query for finding/updating book:", JSON.stringify(query, null, 2));
+    
+    let savedBook;
+    const existingBook = await AvailableBook.findOne(query);
+    
+    if (existingBook) {
+      // Update existing book - explicitly set all fields
+      console.log("📝 Updating existing book:", existingBook._id);
+      existingBook.bookTitle = String(bookTitle);
+      existingBook.Year = String(Year);
+      existingBook.Regulation = String(Regulation);
+      existingBook.department = String(department);
+      existingBook.semester = String(semester);
+      existingBook.contact = String(contact);
+      existingBook.userId = userId;
+      existingBook.isAvailable = true;
+      existingBook.price = Number(finalPrice); // CRITICAL: Explicitly set price
+      existingBook.requiresPayment = Boolean(finalRequiresPayment); // CRITICAL: Explicitly set requiresPayment
+      existingBook.paymentStatus = finalRequiresPayment ? "pending" : "verified";
+      existingBook.paymentVerified = !finalRequiresPayment;
+      
+      // Mark fields as modified to ensure they're saved
+      existingBook.markModified('price');
+      existingBook.markModified('requiresPayment');
+      existingBook.markModified('paymentStatus');
+      existingBook.markModified('paymentVerified');
+      
+      savedBook = await existingBook.save({ validateBeforeSave: true });
+      console.log("✅ Updated existing book");
+    } else {
+      // Create new book - use constructor to ensure all fields are set
+      console.log("📝 Creating new book");
+      savedBook = new AvailableBook({
+        bookTitle: String(bookTitle),
+        Year: String(Year),
+        Regulation: String(Regulation),
+        department: String(department),
+        semester: String(semester),
+        contact: String(contact),
+        userId: userId,
+        isAvailable: true,
+        price: Number(finalPrice), // CRITICAL: Explicitly set price
+        requiresPayment: Boolean(finalRequiresPayment), // CRITICAL: Explicitly set requiresPayment
+        paymentStatus: finalRequiresPayment ? "pending" : "verified",
+        paymentVerified: !finalRequiresPayment,
+        utr: "",
+        paidBy: null,
+        paymentDate: null,
+        utrSubmittedDate: null
+      });
+      
+      // Mark fields as modified
+      savedBook.markModified('price');
+      savedBook.markModified('requiresPayment');
+      
+      await savedBook.save({ validateBeforeSave: true });
+      console.log("✅ Created new book");
+    }
+    
+    console.log("✅ Book saved with ID:", savedBook._id);
+    console.log("Book price after save:", savedBook.price, "Type:", typeof savedBook.price);
+    console.log("Book requiresPayment after save:", savedBook.requiresPayment, "Type:", typeof savedBook.requiresPayment);
+    
+    console.log("✅ Book saved/updated with ID:", savedBook._id);
+    console.log("Saved book price:", savedBook.price, "requiresPayment:", savedBook.requiresPayment);
+    
+    // CRITICAL VERIFICATION: Check if price was actually saved
+    if (finalPrice > 0 && (savedBook.price === undefined || savedBook.price === null || savedBook.price === 0)) {
+      console.error("❌❌❌ CRITICAL ERROR: Price was NOT saved correctly!");
+      console.error("Expected price:", finalPrice);
+      console.error("Actual saved price:", savedBook.price);
+      console.error("Saved book object:", JSON.stringify(savedBook.toObject(), null, 2));
+      // Try to fix it by updating again
+      const fixedBook = await AvailableBook.findByIdAndUpdate(
+        savedBook._id,
+        { $set: { price: finalPrice, requiresPayment: finalRequiresPayment } },
+        { new: true }
+      );
+      console.log("🔧 Attempted fix - new price:", fixedBook.price);
+      // Use the fixed book
+      Object.assign(savedBook, fixedBook);
+    }
+    
+    console.log("✅ ===== BOOK SAVED TO DATABASE =====");
+    console.log("Saved book ID:", savedBook._id);
+    console.log("Saved book direct properties:", {
+      price: savedBook.price,
+      requiresPayment: savedBook.requiresPayment,
+      "price type": typeof savedBook.price,
+      "requiresPayment type": typeof savedBook.requiresPayment,
+      "price === finalPrice": savedBook.price === finalPrice,
+      "requiresPayment === finalRequiresPayment": savedBook.requiresPayment === finalRequiresPayment
     });
-    await newBook.save();
+    
+    // Verify the saved data by fetching it again from database (using lean to get plain object)
+    const verifiedBook = await AvailableBook.findById(savedBook._id).lean();
+    console.log("✅ VERIFIED - Fetched from DB (lean):", {
+      _id: verifiedBook._id,
+      bookTitle: verifiedBook.bookTitle,
+      price: verifiedBook.price,
+      requiresPayment: verifiedBook.requiresPayment,
+      paymentStatus: verifiedBook.paymentStatus,
+      "price exists": verifiedBook.price !== undefined,
+      "Payment exists": verifiedBook.requiresPayment !== undefined,
+      "price value": verifiedBook.price,
+      "requiresPayment value": verifiedBook.requiresPayment,
+      "price === 0": verifiedBook.price === 0,
+      "price === 100": verifiedBook.price === 100
+    });
+    
+    // Also check the document directly
+    const directBook = await AvailableBook.findById(savedBook._id);
+    console.log("✅ VERIFIED - Direct document:", {
+      price: directBook.price,
+      requiresPayment: directBook.requiresPayment,
+      "toObject()": directBook.toObject({ minimize: false })
+    });
+    
+    console.log("Saved book FULL data:", JSON.stringify(verifiedBook, null, 2));
+    console.log("=====================================");
+    
+    // Ensure we use the verified data for response - CRITICAL: Use actual saved values
+    let responsePrice = verifiedBook.price !== undefined && verifiedBook.price !== null ? verifiedBook.price : finalPrice;
+    let responseRequiresPayment = verifiedBook.requiresPayment !== undefined && verifiedBook.requiresPayment !== null ? verifiedBook.requiresPayment : finalRequiresPayment;
+    
+    // Final safety check: if we expected a price but got 0, use the finalPrice we calculated
+    if (finalPrice > 0 && responsePrice === 0) {
+      console.error("⚠️ WARNING: Response price is 0 but should be", finalPrice);
+      console.error("Using finalPrice instead:", finalPrice);
+      responsePrice = finalPrice;
+      responseRequiresPayment = finalRequiresPayment;
+    }
+    
+    console.log("📤 Response values:", {
+      responsePrice,
+      responseRequiresPayment,
+      "responsePrice type": typeof responsePrice,
+      "responseRequiresPayment type": typeof responseRequiresPayment
+    });
 
     // Create a plain object to push into the books array
+    // CRITICAL: Explicitly include price and requiresPayment even if 0/false
     const seniorBook = {
-      bookTitle,
-      Year,
-      Regulation,
-      sem: semester,
-      dep: department,
-      contact,
-      userId,
+      bookTitle: String(bookTitle),
+      Year: String(Year),
+      Regulation: String(Regulation),
+      sem: String(semester),
+      dep: String(department),
+      contact: String(contact),
+      userId: userId,
+      price: Number(finalPrice), // CRITICAL: Explicitly convert to Number
+      requiresPayment: Boolean(finalRequiresPayment), // CRITICAL: Explicitly convert to Boolean
     };
 
-    // Add the book details to the user's books array
-    user.books.push(seniorBook);
+    console.log("Adding book to user's books array:", JSON.stringify(seniorBook, null, 2));
+    console.log("Senior book price:", seniorBook.price, "Type:", typeof seniorBook.price);
+    console.log("Senior book requiresPayment:", seniorBook.requiresPayment, "Type:", typeof seniorBook.requiresPayment);
+
+    // Check if book already exists in user's books array
+    const existingBookIndex = user.books.findIndex(
+      (b) =>
+        b.bookTitle === bookTitle &&
+        b.Year === Year &&
+        b.Regulation === Regulation &&
+        b.sem === semester &&
+        b.dep === department
+    );
+
+    if (existingBookIndex >= 0) {
+      // Update existing book with new price/payment info
+      console.log("Updating existing book in user's array at index:", existingBookIndex);
+      user.books[existingBookIndex] = seniorBook;
+    } else {
+      // Add new book
+      console.log("Adding new book to user's array");
+      user.books.push(seniorBook);
+    }
+
+    // Mark the books array as modified to ensure it's saved
+    user.markModified('books');
     await user.save();
+    
+    // Verify the saved book in user's array
+    const savedUser = await seniorCollection.findById(userId);
+    const savedBookInArray = savedUser.books.find(
+      (b) =>
+        b.bookTitle === bookTitle &&
+        b.Year === Year &&
+        b.Regulation === Regulation
+    );
+    console.log("✅ Verified book in user's array:", {
+      found: !!savedBookInArray,
+      price: savedBookInArray?.price,
+      requiresPayment: savedBookInArray?.requiresPayment,
+      "has price field": savedBookInArray?.price !== undefined,
+      "has requiresPayment field": savedBookInArray?.requiresPayment !== undefined
+    });
 
-    console.log("Book successfully added to user's list:", seniorBook);
+    console.log("Book successfully added to user's list with price:", finalPrice, "requiresPayment:", finalRequiresPayment);
 
-    res.status(201).send("Book added as available.");
+    // Return the saved book with all fields for verification
+    // Use verified data to ensure price and requiresPayment are included
+    res.status(201).json({ 
+      message: "Book added as available.", 
+      book: {
+        _id: savedBook._id,
+        bookTitle: savedBook.bookTitle,
+        price: responsePrice, // Use verified price
+        requiresPayment: responseRequiresPayment, // Use verified requiresPayment
+        paymentStatus: verifiedBook.paymentStatus || (finalRequiresPayment ? "pending" : "verified"),
+        paymentVerified: verifiedBook.paymentVerified !== undefined ? verifiedBook.paymentVerified : !finalRequiresPayment,
+        contact: savedBook.contact,
+        isAvailable: savedBook.isAvailable
+      }
+    });
   } catch (error) {
-    console.error("Error during book availability insertion:", error);
-    res.status(500).send("Error saving book availability.");
+    console.error("❌ ===== ERROR DURING BOOK SAVE =====");
+    console.error("Error details:", error);
+    console.error("Error message:", error.message);
+    console.error("Error stack:", error.stack);
+    console.error("Error name:", error.name);
+    if (error.errors) {
+      console.error("Validation errors:", error.errors);
+    }
+    console.error("====================================");
+    res.status(500).json({ 
+      message: "Error saving book availability.",
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// Email transporter configuration
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.MY_EMAIL || "muthuanushyaprojecthub@gmail.com", // Sender email
+    pass: process.env.MY_EMAIL_PASS || "hattsaisxftjxxgb", // App password (remove spaces from: hatt sais xftj xxgb)
+  },
+});
+
+// Admin email for notifications
+const ADMIN_EMAIL = process.env.MY_EMAIL_Admin || "anushyamuthu97@gmail.com";
+
+// Submit UTR number after payment
+app.post("/submit-utr", async (req, res) => {
+  try {
+    const { bookId, utr, juniorId } = req.body;
+
+    console.log("📝 ===== UTR SUBMISSION =====");
+    console.log("Request body:", { bookId, utr, juniorId });
+    console.log("Junior ID type:", typeof juniorId);
+    console.log("Junior ID value:", juniorId);
+
+    if (!bookId || !utr || !juniorId) {
+      return res.status(400).json({ message: "Book ID, UTR, and Junior ID are required" });
+    }
+
+    // Find the book
+    const book = await AvailableBook.findById(bookId);
+    if (!book) {
+      console.error("❌ Book not found with ID:", bookId);
+      return res.status(404).json({ message: "Book not found" });
+    }
+
+    // Find the junior user - try both string and ObjectId formats
+    let junior = null;
+    if (mongoose.Types.ObjectId.isValid(juniorId)) {
+      junior = await juniorCollection.findById(juniorId);
+      if (!junior) {
+        // Try finding by other fields as fallback
+        console.log("⚠️ User not found by ID, trying to find by other methods...");
+        // This shouldn't happen, but let's log it
+      }
+    } else {
+      console.error("❌ Invalid Junior ID format:", juniorId);
+      return res.status(400).json({ message: "Invalid Junior ID format" });
+    }
+
+    if (!junior) {
+      console.error("❌ Junior user not found with ID:", juniorId);
+      console.error("Available junior users count:", await juniorCollection.countDocuments());
+      return res.status(404).json({ 
+        message: "Junior user not found. Please login again.",
+        details: "The user ID provided does not match any user in the database."
+      });
+    }
+
+    console.log("✅ Junior user found:", {
+      id: junior._id,
+      name: junior.name,
+      email: junior.mailId
+    });
+
+    // Update book with UTR
+    book.utr = utr;
+    book.paidBy = juniorId;
+    book.paymentStatus = "paid";
+    book.utrSubmittedDate = new Date();
+    await book.save();
+
+    // Send email notification to admin
+    const acceptUrl = `http://localhost:8000/verify-payment/${bookId}/${utr}/accept`;
+    const rejectUrl = `http://localhost:8000/verify-payment/${bookId}/${utr}/reject`;
+
+    const mailOptions = {
+      from: process.env.MY_EMAIL || "muthuanushyaprojecthub@gmail.com",
+      to: ADMIN_EMAIL,
+      subject: `Payment UTR Verification Request - Book: ${book.bookTitle}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #cc9b89;">Payment UTR Verification Request</h2>
+          <p><strong>Book Title:</strong> ${book.bookTitle}</p>
+          <p><strong>Year:</strong> ${book.Year}</p>
+          <p><strong>Department:</strong> ${book.department}</p>
+          <p><strong>Price:</strong> ₹${book.price}</p>
+          <p><strong>Junior Name:</strong> ${junior.name}</p>
+          <p><strong>Junior Email:</strong> ${junior.mailId}</p>
+          <p><strong>UTR Number:</strong> ${utr}</p>
+          <p><strong>Submitted Date:</strong> ${new Date().toLocaleString()}</p>
+          <div style="margin: 30px 0;">
+            <a href="${acceptUrl}" 
+               style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin-right: 10px; display: inline-block;">
+              Accept & Show Contact
+            </a>
+            <a href="${rejectUrl}" 
+               style="background-color: #f44336; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
+              Reject
+            </a>
+          </div>
+          <p style="color: #666; font-size: 12px;">Click Accept to verify payment and make contact visible to the junior.</p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.status(200).json({ 
+      message: "UTR submitted successfully. Admin will verify and notify you.",
+      book 
+    });
+  } catch (error) {
+    console.error("Error submitting UTR:", error);
+    res.status(500).json({ message: "Error submitting UTR" });
+  }
+});
+
+// Admin approval endpoint (called from email link)
+app.get("/verify-payment/:bookId/:utr/:action", async (req, res) => {
+  try {
+    const { bookId, utr, action } = req.params;
+
+    const book = await AvailableBook.findById(bookId);
+    if (!book) {
+      return res.status(404).send("<h1>Book not found</h1>");
+    }
+
+    if (book.utr !== utr) {
+      return res.status(400).send("<h1>Invalid UTR</h1>");
+    }
+
+    if (action === "accept") {
+      book.paymentStatus = "verified";
+      book.paymentVerified = true;
+      book.paymentDate = new Date();
+      await book.save();
+
+      // Notify junior via email
+      const junior = await juniorCollection.findById(book.paidBy);
+      if (junior) {
+        const mailOptions = {
+          from: process.env.MY_EMAIL || "muthuanushyaprojecthub@gmail.com",
+          to: junior.mailId,
+          subject: "Payment Verified - Contact Details Now Available",
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: #4CAF50;">Payment Verified Successfully!</h2>
+              <p>Your payment for <strong>${book.bookTitle}</strong> has been verified.</p>
+              <p>You can now view the contact details in the BookNest application.</p>
+              <p><strong>Contact Number:</strong> ${book.contact}</p>
+              <p>Thank you for using BookNest!</p>
+            </div>
+          `,
+        };
+        await transporter.sendMail(mailOptions);
+      }
+
+      return res.send(`
+        <html>
+          <head>
+            <title>Payment Verified</title>
+            <style>
+              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: linear-gradient(135deg, #f2bfac, #ffe4d6); }
+              .container { background: white; padding: 30px; border-radius: 10px; max-width: 500px; margin: 0 auto; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+              h1 { color: #4CAF50; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>✓ Payment Verified</h1>
+              <p>Contact details have been made visible to the junior.</p>
+              <p>You can close this window.</p>
+            </div>
+          </body>
+        </html>
+      `);
+    } else if (action === "reject") {
+      book.paymentStatus = "rejected";
+      book.paymentVerified = false;
+      await book.save();
+
+      return res.send(`
+        <html>
+          <head>
+            <title>Payment Rejected</title>
+            <style>
+              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: linear-gradient(135deg, #f2bfac, #ffe4d6); }
+              .container { background: white; padding: 30px; border-radius: 10px; max-width: 500px; margin: 0 auto; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+              h1 { color: #f44336; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>✗ Payment Rejected</h1>
+              <p>Payment has been rejected. Please contact the admin for more information.</p>
+            </div>
+          </body>
+        </html>
+      `);
+    }
+
+    res.status(400).send("<h1>Invalid action</h1>");
+  } catch (error) {
+    console.error("Error verifying payment:", error);
+    res.status(500).send("<h1>Error verifying payment</h1>");
+  }
+});
+
+// Get payment status for a book
+app.get("/payment-status/:bookId/:juniorId", async (req, res) => {
+  try {
+    const { bookId, juniorId } = req.params;
+
+    const book = await AvailableBook.findById(bookId);
+    if (!book) {
+      return res.status(404).json({ message: "Book not found" });
+    }
+
+    // Check if book requires payment (either requiresPayment flag OR price > 0)
+    const needsPayment = book.requiresPayment || (book.price && book.price > 0);
+
+    // Check if this junior has paid for this book
+    const canViewContact = book.paymentVerified && 
+                          book.paidBy && 
+                          book.paidBy.toString() === juniorId;
+
+    res.json({
+      requiresPayment: needsPayment,
+      price: book.price || 0,
+      paymentStatus: book.paymentStatus || "pending",
+      paymentVerified: book.paymentVerified || false,
+      canViewContact: canViewContact || !needsPayment,
+      contact: (canViewContact || !needsPayment) ? book.contact : null,
+    });
+  } catch (error) {
+    console.error("Error getting payment status:", error);
+    res.status(500).json({ message: "Error getting payment status" });
+  }
+});
+
+// Submit UTR for other books
+app.post("/submit-utr-otherbook", async (req, res) => {
+  try {
+    const { bookId, utr, userId } = req.body;
+
+    console.log("📝 ===== UTR SUBMISSION (OTHER BOOK) =====");
+    console.log("Request body:", { bookId, utr, userId });
+
+    if (!bookId || !utr || !userId) {
+      return res.status(400).json({ message: "Book ID, UTR, and User ID are required" });
+    }
+
+    // Find the book in availableCollection
+    const book = await availableCollection.findById(bookId);
+    if (!book) {
+      console.error("❌ Book not found with ID:", bookId);
+      return res.status(404).json({ message: "Book not found" });
+    }
+
+    // Find the user (could be senior or junior)
+    let user = null;
+    if (mongoose.Types.ObjectId.isValid(userId)) {
+      // Try junior first
+      user = await juniorCollection.findById(userId);
+      if (!user) {
+        // Try senior
+        user = await seniorCollection.findById(userId);
+      }
+    }
+
+    if (!user) {
+      console.error("❌ User not found with ID:", userId);
+      return res.status(404).json({ 
+        message: "User not found. Please login again."
+      });
+    }
+
+    console.log("✅ User found:", {
+      id: user._id,
+      name: user.name,
+      email: user.mailId
+    });
+
+    // Update book with UTR
+    book.utr = utr;
+    book.paidBy = userId;
+    book.paymentStatus = "paid";
+    book.utrSubmittedDate = new Date();
+    await book.save();
+
+    // Send email notification to admin
+    const acceptUrl = `http://localhost:8000/verify-payment-otherbook/${bookId}/${utr}/accept`;
+    const rejectUrl = `http://localhost:8000/verify-payment-otherbook/${bookId}/${utr}/reject`;
+
+    const mailOptions = {
+      from: process.env.MY_EMAIL || "muthuanushyaprojecthub@gmail.com",
+      to: ADMIN_EMAIL,
+      subject: `Payment UTR Verification Request - Other Book: ${book.title}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #cc9b89;">Payment UTR Verification Request (Other Book)</h2>
+          <p><strong>Book Title:</strong> ${book.title}</p>
+          <p><strong>Availability:</strong> ${book.available}</p>
+          <p><strong>Price:</strong> ₹${book.price}</p>
+          <p><strong>User Name:</strong> ${user.name}</p>
+          <p><strong>User Email:</strong> ${user.mailId}</p>
+          <p><strong>UTR Number:</strong> ${utr}</p>
+          <p><strong>Submitted Date:</strong> ${new Date().toLocaleString()}</p>
+          <div style="margin: 30px 0;">
+            <a href="${acceptUrl}" 
+               style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin-right: 10px; display: inline-block;">
+              Accept & Show Contact
+            </a>
+            <a href="${rejectUrl}" 
+               style="background-color: #f44336; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
+              Reject
+            </a>
+          </div>
+          <p style="color: #666; font-size: 12px;">Click Accept to verify payment and make contact visible to the user.</p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    // Send confirmation email to user
+    const userMailOptions = {
+      from: process.env.MY_EMAIL || "muthuanushyaprojecthub@gmail.com",
+      to: user.mailId,
+      subject: "UTR Submitted - Payment Verification Pending",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #cc9b89;">UTR Submitted Successfully</h2>
+          <p>Your UTR number for <strong>${book.title}</strong> has been submitted.</p>
+          <p><strong>UTR Number:</strong> ${utr}</p>
+          <p>Admin will verify your payment and notify you via email once verified.</p>
+          <p>You will be able to view the contact details after verification.</p>
+          <p>Thank you for using BookNest!</p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(userMailOptions);
+
+    res.status(200).json({ 
+      message: "UTR submitted successfully. Admin will verify and notify you.",
+      book 
+    });
+  } catch (error) {
+    console.error("Error submitting UTR:", error);
+    res.status(500).json({ message: "Error submitting UTR" });
+  }
+});
+
+// Admin approval endpoint for other books (called from email link)
+app.get("/verify-payment-otherbook/:bookId/:utr/:action", async (req, res) => {
+  try {
+    const { bookId, utr, action } = req.params;
+
+    const book = await availableCollection.findById(bookId);
+    if (!book) {
+      return res.status(404).send("<h1>Book not found</h1>");
+    }
+
+    if (book.utr !== utr) {
+      return res.status(400).send("<h1>Invalid UTR</h1>");
+    }
+
+    if (action === "accept") {
+      book.paymentStatus = "verified";
+      book.paymentVerified = true;
+      book.paymentDate = new Date();
+      await book.save();
+
+      // Notify user via email
+      let user = null;
+      if (book.paidBy) {
+        if (mongoose.Types.ObjectId.isValid(book.paidBy)) {
+          user = await juniorCollection.findById(book.paidBy);
+          if (!user) {
+            user = await seniorCollection.findById(book.paidBy);
+          }
+        }
+      }
+
+      if (user) {
+        const mailOptions = {
+          from: process.env.MY_EMAIL || "muthuanushyaprojecthub@gmail.com",
+          to: user.mailId,
+          subject: "Payment Verified - Contact Details Now Available",
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: #4CAF50;">Payment Verified Successfully!</h2>
+              <p>Your payment for <strong>${book.title}</strong> has been verified.</p>
+              <p>You can now view the contact details in the BookNest application.</p>
+              <p><strong>Contact Number:</strong> ${book.contact}</p>
+              <p>Thank you for using BookNest!</p>
+            </div>
+          `,
+        };
+        await transporter.sendMail(mailOptions);
+      }
+
+      return res.send(`
+        <html>
+          <head>
+            <title>Payment Verified</title>
+            <style>
+              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: linear-gradient(135deg, #f2bfac, #ffe4d6); }
+              .container { background: white; padding: 30px; border-radius: 10px; max-width: 500px; margin: 0 auto; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+              h1 { color: #4CAF50; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>✓ Payment Verified</h1>
+              <p>Contact details have been made visible to the user.</p>
+              <p>You can close this window.</p>
+            </div>
+          </body>
+        </html>
+      `);
+    } else if (action === "reject") {
+      book.paymentStatus = "rejected";
+      book.paymentVerified = false;
+      await book.save();
+
+      return res.send(`
+        <html>
+          <head>
+            <title>Payment Rejected</title>
+            <style>
+              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: linear-gradient(135deg, #f2bfac, #ffe4d6); }
+              .container { background: white; padding: 30px; border-radius: 10px; max-width: 500px; margin: 0 auto; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+              h1 { color: #f44336; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>✗ Payment Rejected</h1>
+              <p>Payment has been rejected. Please contact the admin for more information.</p>
+            </div>
+          </body>
+        </html>
+      `);
+    }
+
+    res.status(400).send("<h1>Invalid action</h1>");
+  } catch (error) {
+    console.error("Error verifying payment:", error);
+    res.status(500).send("<h1>Error verifying payment</h1>");
+  }
+});
+
+// Get payment status for other books
+app.get("/payment-status-otherbook/:bookId/:userId", async (req, res) => {
+  try {
+    const { bookId, userId } = req.params;
+
+    const book = await availableCollection.findById(bookId);
+    if (!book) {
+      return res.status(404).json({ message: "Book not found" });
+    }
+
+    // Check if book requires payment
+    const needsPayment = book.requiresPayment || (book.price && book.price > 0);
+
+    // Check if this user has paid for this book
+    const canViewContact = book.paymentVerified && 
+                          book.paidBy && 
+                          book.paidBy.toString() === userId;
+
+    // Determine payment status: if no UTR exists, payment hasn't been initiated
+    let paymentStatus = "not_initiated";
+    if (book.utr && book.utr.trim() !== "") {
+      // UTR exists, use the actual payment status
+      paymentStatus = book.paymentStatus || "pending";
+    } else if (book.paymentStatus && book.paymentStatus !== "pending") {
+      // If paymentStatus is set to something other than default pending, use it
+      paymentStatus = book.paymentStatus;
+    }
+
+    res.json({
+      requiresPayment: needsPayment,
+      price: book.price || 0,
+      paymentStatus: paymentStatus,
+      paymentVerified: book.paymentVerified || false,
+      canViewContact: canViewContact || !needsPayment,
+      contact: (canViewContact || !needsPayment) ? book.contact : null,
+    });
+  } catch (error) {
+    console.error("Error getting payment status:", error);
+    res.status(500).json({ message: "Error getting payment status" });
   }
 });
 
@@ -641,8 +1556,10 @@ app.get("/junior-details", authenticateToken, async (req, res) => {
     res.status(200).json({
       message: "User details retrieved successfully",
       user: {
+        userId: user._id, // CRITICAL: Include userId for UTR submission and other operations
         mailId: user.mailId,
         name: user.name,
+        picture: user.picture,
         books: user.books, // Example: Books associated with the user
       },
     });
@@ -4643,6 +5560,2304 @@ const insertInitialData = async () => {
         department: "AI & DS",
         semester: "VII sem",
       },
+
+      // ========== REGULATION 2025 BOOKS ==========
+      
+      // CSE - I Year - I Semester
+      {
+        bookTitle: "MA8251 Engineering Mathematics - I",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "PH8251 Engineering Physics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "CY8251 Engineering Chemistry",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8251 Problem Solving and Python Programming",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8252 Engineering Graphics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "HS8251 Communicative English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8261 Problem Solving and Python Programming Laboratory",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "BS8261 Physics and Chemistry Laboratory",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "I sem",
+      },
+
+      // CSE - I Year - II Semester
+      {
+        bookTitle: "MA8252 Engineering Mathematics - II",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "PH8252 Materials Science",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "BE8251 Basic Electrical and Electronics Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "GE8291 Environmental Science and Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "GE8292 Engineering Mechanics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "CS8251 Programming in C",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "GE8261 Communicative English Laboratory",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "CS8261 C Programming Laboratory",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "II sem",
+      },
+
+      // CSE - II Year - III Semester
+      {
+        bookTitle: "MA8351 Discrete Mathematics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CS8351 Digital Principles and System Design",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CS8391 Data Structures",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CS8392 Object Oriented Programming",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "EC8395 Communication Engineering",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CS8381 Data Structures Laboratory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CS8383 Object Oriented Programming Laboratory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CS8382 Digital Systems Laboratory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "III sem",
+      },
+
+      // CSE - II Year - IV Semester
+      {
+        bookTitle: "MA8402 Probability and Queueing Theory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8491 Computer Architecture",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8492 Database Management Systems",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8451 Design and Analysis of Algorithms",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8493 Operating Systems",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8481 Database Management Systems Laboratory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8461 Operating Systems Laboratory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "HS8461 Advanced Reading and Writing",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "IV sem",
+      },
+
+      // CSE - III Year - V Semester
+      {
+        bookTitle: "MA8551 Algebra and Number Theory",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CS8591 Computer Networks",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CS8592 Object Oriented Analysis and Design",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CS8501 Theory of Computation",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CS8593 Compiler Design",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CS8581 Networks Laboratory",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CS8582 Object Oriented Analysis and Design Laboratory",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CS8583 Compiler Design Laboratory",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "V sem",
+      },
+
+      // CSE - III Year - VI Semester
+      {
+        bookTitle: "CS8651 Internet Programming",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "CS8691 Artificial Intelligence",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "CS8601 Mobile Computing",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "CS8602 Wireless Communication",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "CS8603 Distributed Systems",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "CS8661 Internet Programming Laboratory",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "CS8662 Mobile Application Development Laboratory",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "GE8761 Professional Communication Laboratory",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VI sem",
+      },
+
+      // CSE - IV Year - VII Semester
+      {
+        bookTitle: "CS8791 Cryptography and Network Security",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "CS8792 Cloud Computing",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "CS8793 Cloud Services and IoT",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "CS8701 Computational Intelligence",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective I",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective II",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "CS8711 Cloud Computing Laboratory",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "GE8791 Soft Skills",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VII sem",
+      },
+
+      // CSE - IV Year - VIII Semester
+      {
+        bookTitle: "CS8801 Digital Image Processing",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "CS8802 Human Computer Interaction",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Professional Elective III",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Professional Elective IV",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Open Elective",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Project Work",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CSE",
+        semester: "VIII sem",
+      },
+
+      // IT - I Year - I Semester
+      {
+        bookTitle: "MA8251 Engineering Mathematics - I",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "PH8251 Engineering Physics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "CY8251 Engineering Chemistry",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8251 Problem Solving and Python Programming",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8252 Engineering Graphics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "HS8251 Communicative English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "I sem",
+      },
+
+      // IT - I Year - II Semester
+      {
+        bookTitle: "MA8252 Engineering Mathematics - II",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "PH8252 Materials Science",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "BE8251 Basic Electrical and Electronics Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "GE8291 Environmental Science and Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "IT8251 Programming in C",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "HS8252 Technical English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "II sem",
+      },
+
+      // IT - II Year - III Semester
+      {
+        bookTitle: "MA8351 Discrete Mathematics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CS8391 Data Structures",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CS8392 Object Oriented Programming",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CS8351 Digital Principles and System Design",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "EC8395 Communication Engineering",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "III sem",
+      },
+
+      // IT - II Year - IV Semester
+      {
+        bookTitle: "MA8402 Probability and Queueing Theory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8491 Computer Architecture",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8492 Database Management Systems",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8451 Design and Analysis of Algorithms",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8493 Operating Systems",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "IV sem",
+      },
+
+      // IT - III Year - V Semester
+      {
+        bookTitle: "CS8591 Computer Networks",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "IT8501 Web Technology",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CS8592 Object Oriented Analysis and Design",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CS8593 Compiler Design",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "IT8511 Software Engineering",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "V sem",
+      },
+
+      // IT - III Year - VI Semester
+      {
+        bookTitle: "CS8691 Artificial Intelligence",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "IT8601 Computational Intelligence",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "CS8601 Mobile Computing",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "IT8651 Service Oriented Architecture",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "Professional Elective I",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VI sem",
+      },
+
+      // IT - IV Year - VII Semester
+      {
+        bookTitle: "CS8791 Cryptography and Network Security",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "IT8701 Cloud Computing",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "IT8702 Internet of Things",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective II",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective III",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Open Elective",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VII sem",
+      },
+
+      // IT - IV Year - VIII Semester
+      {
+        bookTitle: "IT8801 Social Network Analysis",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Professional Elective IV",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Project Work",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "IT",
+        semester: "VIII sem",
+      },
+
+      // ECE - I Year - I Semester
+      {
+        bookTitle: "MA8251 Engineering Mathematics - I",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "PH8251 Engineering Physics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "CY8251 Engineering Chemistry",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8251 Problem Solving and Python Programming",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8252 Engineering Graphics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "HS8251 Communicative English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "I sem",
+      },
+
+      // ECE - I Year - II Semester
+      {
+        bookTitle: "MA8252 Engineering Mathematics - II",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "PH8252 Materials Science",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "BE8251 Basic Electrical and Electronics Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "GE8291 Environmental Science and Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "GE8292 Engineering Mechanics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "HS8252 Technical English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "II sem",
+      },
+
+      // ECE - II Year - III Semester
+      {
+        bookTitle: "MA8351 Discrete Mathematics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "EC8351 Electron Devices and Circuits",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "EC8392 Digital Electronics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "EC8393 Fundamentals of Data Structures in C",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "EC8394 Analog and Digital Communication",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "GE8291 Environmental Science and Engineering",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "III sem",
+      },
+
+      // ECE - II Year - IV Semester
+      {
+        bookTitle: "MA8402 Probability and Queueing Theory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "EC8452 Electronic Circuits II",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "EC8491 Communication Theory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "EC8451 Electromagnetic Fields",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "EC8453 Linear Integrated Circuits",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "EC8461 Circuits and Simulation Integrated Laboratory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "IV sem",
+      },
+
+      // ECE - III Year - V Semester
+      {
+        bookTitle: "EC8551 Control System Engineering",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "EC8552 Discrete Time Signal Processing",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "EC8591 Wireless Communication",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "EC8592 Antenna and Wave Propagation",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "EC8501 Transmission Lines and RF Systems",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "V sem",
+      },
+
+      // ECE - III Year - VI Semester
+      {
+        bookTitle: "EC8691 Microprocessors and Microcontrollers",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "EC8652 Wireless Networks",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "EC8651 Transmission Lines and Waveguides",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "EC8601 Solid State Drives",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "Professional Elective I",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VI sem",
+      },
+
+      // ECE - IV Year - VII Semester
+      {
+        bookTitle: "EC8791 Embedded and Real Time Systems",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "EC8701 Ad Hoc and Wireless Sensor Networks",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "EC8702 Optical Communication",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective II",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective III",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Open Elective",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VII sem",
+      },
+
+      // ECE - IV Year - VIII Semester
+      {
+        bookTitle: "EC8801 VLSI Design",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "EC8802 Medical Electronics",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Professional Elective IV",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Project Work",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "ECE",
+        semester: "VIII sem",
+      },
+
+      // EEE - I Year - I Semester
+      {
+        bookTitle: "MA8251 Engineering Mathematics - I",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "PH8251 Engineering Physics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "CY8251 Engineering Chemistry",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8251 Problem Solving and Python Programming",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8252 Engineering Graphics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "HS8251 Communicative English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "I sem",
+      },
+
+      // EEE - I Year - II Semester
+      {
+        bookTitle: "MA8252 Engineering Mathematics - II",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "BE8251 Basic Electrical and Electronics Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "GE8291 Environmental Science and Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "EE8251 Circuit Theory",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "HS8252 Technical English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "II sem",
+      },
+
+      // EEE - II Year - III Semester
+      {
+        bookTitle: "MA8351 Discrete Mathematics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "EE8351 Digital Logic Circuits",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "EE8391 Electromagnetic Theory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "EE8352 Electrical Machines I",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "EC8395 Communication Engineering",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "III sem",
+      },
+
+      // EEE - II Year - IV Semester
+      {
+        bookTitle: "MA8402 Probability and Queueing Theory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "EE8401 Electrical Machines II",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "EE8402 Transmission and Distribution",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "EE8403 Measurements and Instrumentation",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "EE8451 Linear Integrated Circuits and Applications",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "IV sem",
+      },
+
+      // EEE - III Year - V Semester
+      {
+        bookTitle: "EE8551 Power System Analysis",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "EE8552 Microprocessors and Microcontrollers",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "EE8591 Power Electronics",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "EE8592 Solid State Drives",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "EE8501 Control Systems",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "V sem",
+      },
+
+      // EEE - III Year - VI Semester
+      {
+        bookTitle: "EE8691 Power System Operation and Control",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "EE8692 Protection and Switchgear",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "EE8601 Solid State Drives",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "EE8602 Power Quality",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "Professional Elective I",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VI sem",
+      },
+
+      // EEE - IV Year - VII Semester
+      {
+        bookTitle: "EE8791 Power Electronics for Renewable Energy Systems",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "EE8701 High Voltage Engineering",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "EE8702 Electrical System Design",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective II",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective III",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Open Elective",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VII sem",
+      },
+
+      // EEE - IV Year - VIII Semester
+      {
+        bookTitle: "EE8801 Smart Grid",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "EE8802 Electric and Hybrid Vehicles",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Professional Elective IV",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Project Work",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "EEE",
+        semester: "VIII sem",
+      },
+
+      // Mechanical - I Year - I Semester
+      {
+        bookTitle: "MA8251 Engineering Mathematics - I",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "PH8251 Engineering Physics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "CY8251 Engineering Chemistry",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8251 Problem Solving and Python Programming",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8252 Engineering Graphics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "HS8251 Communicative English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "I sem",
+      },
+
+      // Mechanical - I Year - II Semester
+      {
+        bookTitle: "MA8252 Engineering Mathematics - II",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "GE8291 Environmental Science and Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "ME8291 Engineering Mechanics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "ME8292 Manufacturing Technology",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "HS8252 Technical English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "II sem",
+      },
+
+      // Mechanical - II Year - III Semester
+      {
+        bookTitle: "MA8351 Discrete Mathematics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "ME8391 Engineering Thermodynamics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "ME8392 Fluid Mechanics and Machinery",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "ME8393 Manufacturing Processes",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "ME8394 Strength of Materials for Mechanical Engineers",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "III sem",
+      },
+
+      // Mechanical - II Year - IV Semester
+      {
+        bookTitle: "MA8402 Probability and Queueing Theory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "ME8491 Kinematics of Machinery",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "ME8492 Engineering Materials and Metallurgy",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "ME8493 Thermal Engineering",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "ME8494 Applied Hydraulics and Pneumatics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "IV sem",
+      },
+
+      // Mechanical - III Year - V Semester
+      {
+        bookTitle: "ME8591 Design of Machine Elements",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "ME8592 Dynamics of Machines",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "ME8593 Heat and Mass Transfer",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "ME8594 Production Technology",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "ME8501 Metrology and Measurements",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "V sem",
+      },
+
+      // Mechanical - III Year - VI Semester
+      {
+        bookTitle: "ME8691 Mechatronics",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "ME8692 Power Plant Engineering",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "ME8693 Process Planning and Cost Estimation",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "ME8601 Automobile Engineering",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "Professional Elective I",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VI sem",
+      },
+
+      // Mechanical - IV Year - VII Semester
+      {
+        bookTitle: "ME8791 Computer Aided Design and Manufacturing",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "ME8792 Robotics",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "ME8793 Finite Element Analysis",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective II",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective III",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Open Elective",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VII sem",
+      },
+
+      // Mechanical - IV Year - VIII Semester
+      {
+        bookTitle: "ME8801 Energy Engineering",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "ME8802 Project Engineering and Management",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Professional Elective IV",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Project Work",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "Mechanical",
+        semester: "VIII sem",
+      },
+
+      // CIVIL - I Year - I Semester
+      {
+        bookTitle: "MA8251 Engineering Mathematics - I",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "PH8251 Engineering Physics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "CY8251 Engineering Chemistry",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8251 Problem Solving and Python Programming",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8252 Engineering Graphics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "HS8251 Communicative English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "I sem",
+      },
+
+      // CIVIL - I Year - II Semester
+      {
+        bookTitle: "MA8252 Engineering Mathematics - II",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "GE8291 Environmental Science and Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "CE8291 Mechanics of Solids",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "CE8292 Construction Materials",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "HS8252 Technical English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "II sem",
+      },
+
+      // CIVIL - II Year - III Semester
+      {
+        bookTitle: "MA8351 Discrete Mathematics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CE8391 Construction Techniques and Practices",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CE8392 Strength of Materials",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CE8393 Fluid Mechanics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CE8394 Surveying",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "III sem",
+      },
+
+      // CIVIL - II Year - IV Semester
+      {
+        bookTitle: "MA8402 Probability and Queueing Theory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CE8491 Soil Mechanics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CE8492 Concrete Technology",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CE8493 Highway Engineering",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CE8494 Applied Hydraulic Engineering",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "IV sem",
+      },
+
+      // CIVIL - III Year - V Semester
+      {
+        bookTitle: "CE8591 Foundation Engineering",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CE8592 Structural Analysis I",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CE8593 Railway, Airport and Harbour Engineering",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CE8594 Environmental Engineering I",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "CE8501 Design of Reinforced Cement Concrete Elements",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "V sem",
+      },
+
+      // CIVIL - III Year - VI Semester
+      {
+        bookTitle: "CE8691 Prestressed Concrete Structures",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "CE8692 Structural Analysis II",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "CE8693 Design of Steel Structures",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "CE8694 Environmental Engineering II",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "Professional Elective I",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VI sem",
+      },
+
+      // CIVIL - IV Year - VII Semester
+      {
+        bookTitle: "CE8791 Design of Reinforced Concrete and Brick Masonry Structures",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "CE8792 Irrigation Engineering",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "CE8793 Estimation, Costing and Valuation Engineering",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective II",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective III",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Open Elective",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VII sem",
+      },
+
+      // CIVIL - IV Year - VIII Semester
+      {
+        bookTitle: "CE8801 Earthquake Resistant Design of Structures",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "CE8802 Professional Practice, Law and Ethics",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Professional Elective IV",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Project Work",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "CIVIL",
+        semester: "VIII sem",
+      },
+
+      // AI & DS - I Year - I Semester
+      {
+        bookTitle: "MA8251 Engineering Mathematics - I",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "PH8251 Engineering Physics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "CY8251 Engineering Chemistry",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8251 Problem Solving and Python Programming",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "GE8252 Engineering Graphics",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "I sem",
+      },
+      {
+        bookTitle: "HS8251 Communicative English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "I sem",
+      },
+
+      // AI & DS - I Year - II Semester
+      {
+        bookTitle: "MA8252 Engineering Mathematics - II",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "AD8251 Fundamentals of Data Science",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "CS8391 Data Structures",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "BE8251 Basic Electrical and Electronics Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "GE8291 Environmental Science and Engineering",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "II sem",
+      },
+      {
+        bookTitle: "HS8252 Technical English",
+        Year: "I Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "II sem",
+      },
+
+      // AI & DS - II Year - III Semester
+      {
+        bookTitle: "MA8351 Discrete Mathematics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "AD8351 Linear Algebra and Applications",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "CS8392 Object Oriented Programming",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "AD8391 Database Management Systems",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "III sem",
+      },
+      {
+        bookTitle: "AD8392 Statistical Methods and Analytics",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "III sem",
+      },
+
+      // AI & DS - II Year - IV Semester
+      {
+        bookTitle: "MA8402 Probability and Queueing Theory",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "AD8491 Machine Learning Techniques",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "AD8492 Deep Learning Fundamentals",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8491 Computer Architecture",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "IV sem",
+      },
+      {
+        bookTitle: "CS8451 Design and Analysis of Algorithms",
+        Year: "II Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "IV sem",
+      },
+
+      // AI & DS - III Year - V Semester
+      {
+        bookTitle: "AD8591 Natural Language Processing",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "AD8592 Computer Vision",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "AD8593 Reinforcement Learning",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "AD8594 Big Data Analytics",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "V sem",
+      },
+      {
+        bookTitle: "Professional Elective I",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "V sem",
+      },
+
+      // AI & DS - III Year - VI Semester
+      {
+        bookTitle: "AD8691 Deep Learning Applications",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "AD8692 Intelligent Agents and Multi-Agent Systems",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "AD8693 Data Mining and Warehousing",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "CS8691 Artificial Intelligence",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VI sem",
+      },
+      {
+        bookTitle: "Professional Elective II",
+        Year: "III Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VI sem",
+      },
+
+      // AI & DS - IV Year - VII Semester
+      {
+        bookTitle: "AD8791 Explainable AI",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "AD8792 Edge Computing and AI",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "AD8793 AI for Healthcare",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective III",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Professional Elective IV",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VII sem",
+      },
+      {
+        bookTitle: "Open Elective",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VII sem",
+      },
+
+      // AI & DS - IV Year - VIII Semester
+      {
+        bookTitle: "AD8801 AI Ethics and Governance",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "AD8802 AI Project Management",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Professional Elective V",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VIII sem",
+      },
+      {
+        bookTitle: "Project Work",
+        Year: "IV Year",
+        Regulation: "2025",
+        department: "AI & DS",
+        semester: "VIII sem",
+      },
     ];
 
     // Loop through the initial data and check if each book already exists
@@ -4679,11 +7894,57 @@ app.get("/getbooks", (req, res) => {
 
 app.get("/availableBooks", async (req, res) => {
   try {
-    const books = await AvailableBook.find(); // Fetch all available books
-    res.status(200).json(books); // Send the list of books as a JSON response
+    const books = await AvailableBook.find({ isAvailable: true }); // Fetch only available books
+    
+    console.log("📚 ===== FETCHING AVAILABLE BOOKS =====");
+    console.log("Total books found:", books.length);
+    books.forEach((book, index) => {
+      console.log(`Book ${index + 1}:`, {
+        _id: book._id,
+        bookTitle: book.bookTitle,
+        price: book.price,
+        requiresPayment: book.requiresPayment,
+        "price in DB": book.price,
+        "requiresPayment in DB": book.requiresPayment
+      });
+    });
+    console.log("=======================================");
+    
+    // Don't send contact for paid books - let frontend handle it based on payment status
+    const booksWithSafeContact = books.map(book => {
+      const bookObj = book.toObject({ minimize: false }); // CRITICAL: minimize: false to include all fields
+      
+      // Ensure price and requiresPayment are always included (even if undefined in old documents)
+      // Default to 0 and false if not present
+      if (bookObj.price === undefined || bookObj.price === null) {
+        bookObj.price = 0;
+      } else {
+        // Ensure price is a number
+        bookObj.price = Number(bookObj.price);
+      }
+      
+      if (bookObj.requiresPayment === undefined || bookObj.requiresPayment === null) {
+        bookObj.requiresPayment = false;
+      } else {
+        // Ensure requiresPayment is a boolean
+        bookObj.requiresPayment = Boolean(bookObj.requiresPayment);
+      }
+      
+      // Log each book's price for debugging
+      if (bookObj.price > 0 || bookObj.requiresPayment) {
+        console.log(`📖 Book "${bookObj.bookTitle}": price=${bookObj.price}, requiresPayment=${bookObj.requiresPayment}`);
+      }
+      
+      // If book requires payment and payment is not verified, don't send contact
+      if ((bookObj.requiresPayment || (bookObj.price && bookObj.price > 0)) && !book.paymentVerified) {
+        bookObj.contact = null; // Hide contact on backend for security
+      }
+      return bookObj;
+    });
+    res.status(200).json(booksWithSafeContact); // Send the list of books as a JSON response
   } catch (error) {
     console.error("Error fetching available books:", error);
-    res.status(500).send("Error fetching available books.");
+    res.status(500).json({ message: "Error fetching available books." });
   }
 });
 

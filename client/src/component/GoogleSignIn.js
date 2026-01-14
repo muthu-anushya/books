@@ -28,8 +28,8 @@ const GoogleSignIn = ({ userType }) => {
       // Send to backend for authentication/registration
       const endpoint =
         userType === "senior"
-          ? "https://books-serverside.onrender.com/google-auth-senior"
-          : "https://books-serverside.onrender.com/google-auth-junior";
+          ? "http://localhost:8000/google-auth-senior"
+          : "http://localhost:8000/google-auth-junior";
 
       console.log("Sending to backend:", { email, name, picture, googleId: sub });
 
@@ -108,7 +108,22 @@ const GoogleSignIn = ({ userType }) => {
           login();
         }}
         disabled={loading}
-        className="w-full flex items-center justify-center gap-3 bg-white hover:bg-gray-100 text-gray-800 font-semibold py-4 px-6 rounded-lg shadow-lg transition-all duration-300 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+        className="w-full flex items-center justify-center gap-3 font-bold py-4 px-6 rounded-xl shadow-lg transition-all duration-300 transform hover:scale-[1.03] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 relative overflow-hidden"
+        style={{
+          background: 'linear-gradient(135deg, #ffffff 0%, #f8f8f8 50%, #ffffff 100%)',
+          border: '3px solid #cc9b89',
+          color: '#8b5a3c'
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'linear-gradient(135deg, #f2bfac 0%, #ffe4d6 50%, #f2bfac 100%)';
+          e.currentTarget.style.borderColor = '#d4a896';
+          e.currentTarget.style.boxShadow = '0 10px 30px rgba(204, 155, 137, 0.3)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'linear-gradient(135deg, #ffffff 0%, #f8f8f8 50%, #ffffff 100%)';
+          e.currentTarget.style.borderColor = '#cc9b89';
+          e.currentTarget.style.boxShadow = '';
+        }}
       >
         {loading ? (
           <>
@@ -132,7 +147,7 @@ const GoogleSignIn = ({ userType }) => {
                 d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
               ></path>
             </svg>
-            <span>Signing in...</span>
+            <span className="font-semibold">Signing in...</span>
           </>
         ) : (
           <>
@@ -158,18 +173,22 @@ const GoogleSignIn = ({ userType }) => {
                 d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
               />
             </svg>
-            <span className="text-lg">Sign in with Google</span>
+            <span className="text-lg font-semibold">Sign in with Google</span>
           </>
         )}
       </button>
 
       {error && (
-        <div className="bg-red-500/20 border border-red-500 text-red-200 px-4 py-3 rounded-lg text-sm">
+        <div className="px-4 py-3 rounded-xl text-sm font-semibold shadow-lg" style={{ 
+          background: 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)',
+          border: '3px solid #ef4444',
+          color: '#991b1b'
+        }}>
           {error}
         </div>
       )}
 
-      <p className="text-sm text-blue-200 text-center mt-4">
+      <p className="text-sm text-center mt-4 font-medium" style={{ color: '#8b5a3c' }}>
         By signing in, you agree to our Terms of Service and Privacy Policy
       </p>
     </div>

@@ -33,7 +33,7 @@ const Login = () => {
           JACSICE BookNest
         </h1>
       </div>
-      <div className=" bg-violet-600 min-h-screen flex items-center justify-center ">
+      <div className="min-h-screen flex items-center justify-center" style={{ background: '#f0d4ce' }}>
         <div className="w-full max-w-md bg-white shadow-md rounded-lg p-8">
           <h2 className="text-2xl font-bold text-center mb-6">Login</h2>
           <form onSubmit={handleSubmit}>
