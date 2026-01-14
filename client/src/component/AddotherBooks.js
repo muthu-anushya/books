@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
+import API_BASE_URL from "../config/api";
 
 const AddotherBooks = () => {
   const [title, setTitle] = useState("");
@@ -61,7 +62,7 @@ const AddotherBooks = () => {
     setIsSubmitting(true);
     try {
       const response = await axios.post(
-        "http://localhost:8000/otherbooks",
+        `${API_BASE_URL}/otherbooks`,
         {
           title,
           available,

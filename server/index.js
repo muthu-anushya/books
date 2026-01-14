@@ -12,9 +12,39 @@ const SECRET_KEY = "Muthu@97$"; // Use an environment variable in production
 const app = express();
 const port = 8000;
 const cors = require("cors");
-// const cors = require("cors");
-// app.use(cors({ origin: "https://jacsice-booknest-webapp.onrender.com" })); // Allow only your frontend  // https://books-client-iaft.onrender.com
-app.use(cors());
+
+// CORS configuration for production
+const allowedOrigins = [
+  process.env.FRONTEND_URL || "https://jacsice-booknest-webapp.onrender.com",
+  "https://jacsice-booknest-webapp.onrender.com",
+  "https://books-client-iaft.onrender.com",
+  "http://localhost:3000", // For local development
+  "http://localhost:3001", // Alternative local port
+];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        // In production, only allow specific origins
+        if (process.env.NODE_ENV === "production") {
+          callback(new Error("Not allowed by CORS"));
+        } else {
+          // In development, allow all origins
+          callback(null, true);
+        }
+      }
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
 app.use(express.json());
 app.use(bodyParser.urlencoded({ extended: false }));

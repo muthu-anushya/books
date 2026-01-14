@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useState } from "react";
 import { useEffect } from "react";
 import axios from "axios";
+import API_BASE_URL from "../config/api";
 
 export default function SeniorSite() {
   const user = JSON.parse(localStorage.getItem("user"));
@@ -18,7 +19,7 @@ export default function SeniorSite() {
 
     try {
       const response = await fetch(
-        `http://localhost:8000/books/${seniorId}/${bookId}`,
+        `${API_BASE_URL}/books/${seniorId}/${bookId}`,
         {
           method: "DELETE",
         }
@@ -53,7 +54,7 @@ export default function SeniorSite() {
     // Fetch other books added by this senior
     const fetchOtherBooks = async () => {
       try {
-        const response = await axios.get("http://localhost:8000/otherbooks");
+        const response = await axios.get(`${API_BASE_URL}/otherbooks`);
         // Filter books added by this senior
         const seniorOtherBooks = response.data.filter(
           book => book.userId && book.userId === storedUser?.userId
@@ -77,7 +78,7 @@ export default function SeniorSite() {
 
     try {
       const response = await axios.delete(
-        `http://localhost:8000/otherbooks/${bookId}`
+        `${API_BASE_URL}/otherbooks/${bookId}`
       );
 
       if (response.status === 200) {

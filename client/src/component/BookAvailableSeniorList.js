@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { IoCall } from "react-icons/io5";
 import { useNavigate } from "react-router-dom";
+import API_BASE_URL from "../config/api";
 
 function BookAvailableSeniorList() {
   const [availableBooks, setAvailableBooks] = useState([]);
@@ -44,7 +45,7 @@ function BookAvailableSeniorList() {
         if (!token) return;
 
         const response = await axios.get(
-          "http://localhost:8000/junior-details",
+          `${API_BASE_URL}/junior-details`,
           {
             headers: {
               Authorization: `Bearer ${token}`,
@@ -69,7 +70,7 @@ function BookAvailableSeniorList() {
     const fetchBooks = async () => {
       try {
         const response = await axios.get(
-          "http://localhost:8000/availableBooks"
+          `${API_BASE_URL}/availableBooks`
         );
         setAvailableBooks(response.data);
         
@@ -86,7 +87,7 @@ function BookAvailableSeniorList() {
             .map(async (book) => {
               try {
                 const statusRes = await axios.get(
-                  `http://localhost:8000/payment-status/${book._id}/${currentUser.userId}`
+                  `${API_BASE_URL}/payment-status/${book._id}/${currentUser.userId}`
                 );
                 return { bookId: book._id, status: statusRes.data };
               } catch (err) {
@@ -133,7 +134,7 @@ function BookAvailableSeniorList() {
             .map(async (book) => {
               try {
                 const statusRes = await axios.get(
-                  `http://localhost:8000/payment-status/${book._id}/${user.userId}`
+                  `${API_BASE_URL}/payment-status/${book._id}/${user.userId}`
                 );
                 return { bookId: book._id, status: statusRes.data };
               } catch (err) {
@@ -183,7 +184,7 @@ function BookAvailableSeniorList() {
         const token = localStorage.getItem("token");
         if (token) {
           const response = await axios.get(
-            "http://localhost:8000/junior-details",
+            `${API_BASE_URL}/junior-details`,
             {
               headers: {
                 Authorization: `Bearer ${token}`,
@@ -224,7 +225,7 @@ function BookAvailableSeniorList() {
 
     try {
       const response = await axios.post(
-        `http://localhost:8000${endpoint}`,
+        `${API_BASE_URL}${endpoint}`,
         {
           bookId: bookToSubmit._id,
           utr: utr,
@@ -237,7 +238,7 @@ function BookAvailableSeniorList() {
       setUtr("");
       
       // Refresh payment status
-      const statusRes = await axios.get(`http://localhost:8000${statusEndpoint}`);
+      const statusRes = await axios.get(`${API_BASE_URL}${statusEndpoint}`);
       if (isOtherBook) {
         setOtherBookPaymentStatuses(prev => ({
           ...prev,
@@ -306,7 +307,7 @@ function BookAvailableSeniorList() {
       const loggedInUser = user || JSON.parse(localStorage.getItem("user"));
       const userId = loggedInUser?.userId ? `?userId=${loggedInUser.userId}` : '';
       const response = await axios.get(
-        `http://localhost:8000/otherbooks${userId}`
+        `${API_BASE_URL}/otherbooks${userId}`
       );
       setOtherAvailableBooks(response.data);
       
@@ -320,7 +321,7 @@ function BookAvailableSeniorList() {
           .map(async (book) => {
             try {
               const statusRes = await axios.get(
-                `http://localhost:8000/payment-status-otherbook/${book._id}/${loggedInUser.userId}`
+                `${API_BASE_URL}/payment-status-otherbook/${book._id}/${loggedInUser.userId}`
               );
               return { bookId: book._id, status: statusRes.data };
             } catch (err) {

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
+import API_BASE_URL from "../config/api";
 
 const JuniorRegistration = () => {
   const [name, setName] = useState("");
@@ -15,9 +16,7 @@ const JuniorRegistration = () => {
     e.preventDefault();
     try {
       const response = await axios.post(
-        // "http://localhost:8000/juniordetails",
-
-        "http://localhost:8000/juniordetails",
+        `${API_BASE_URL}/juniordetails`,
         {
           name,
           mailId,

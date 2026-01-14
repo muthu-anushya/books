@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useGoogleLogin } from "@react-oauth/google";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
+import API_BASE_URL from "../config/api";
 
 const GoogleSignIn = ({ userType }) => {
   const [error, setError] = useState("");
@@ -28,8 +29,8 @@ const GoogleSignIn = ({ userType }) => {
       // Send to backend for authentication/registration
       const endpoint =
         userType === "senior"
-          ? "http://localhost:8000/google-auth-senior"
-          : "http://localhost:8000/google-auth-junior";
+          ? `${API_BASE_URL}/google-auth-senior`
+          : `${API_BASE_URL}/google-auth-junior`;
 
       console.log("Sending to backend:", { email, name, picture, googleId: sub });
 

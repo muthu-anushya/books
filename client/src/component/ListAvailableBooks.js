@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
+import API_BASE_URL from "../config/api";
 
 function ListAvailableBooks() {
   const navigate = useNavigate();
@@ -27,7 +28,7 @@ function ListAvailableBooks() {
   // Fetch books from the backend
   useEffect(() => {
     axios
-      .get("http://localhost:8000/getbooks")
+      .get(`${API_BASE_URL}/getbooks`)
       .then((response) => {
         setBooks(response.data);
       })
@@ -63,7 +64,7 @@ function ListAvailableBooks() {
         const token = localStorage.getItem("token"); // Retrieve token from localStorage
 
         const response = await axios.get(
-          "http://localhost:8000/user-details",
+          `${API_BASE_URL}/user-details`,
           {
             headers: {
               Authorization: `Bearer ${token}`, // Include token in the request
@@ -177,8 +178,8 @@ function ListAvailableBooks() {
     console.log("========================================");
 
     try {
-      const response = await axios.post(
-        "http://localhost:8000/availableBooks",
+        const response = await axios.post(
+          `${API_BASE_URL}/availableBooks`,
         bookDetails
       );
 
